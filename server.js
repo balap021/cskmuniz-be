@@ -220,6 +220,49 @@ const FeaturedWorkImage = sequelize.define('FeaturedWorkImage', {
   timestamps: true
 });
 
+// ContactMessage Model
+const ContactMessage = sequelize.define('ContactMessage', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    trim: true
+  },
+  email: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    trim: true,
+    validate: {
+      isEmail: true
+    }
+  },
+  service: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    trim: true
+  },
+  phone: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    trim: true
+  },
+  message: {
+    type: DataTypes.TEXT,
+    allowNull: false
+  },
+  read: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  }
+}, {
+  tableName: 'contact_messages',
+  timestamps: true
+});
+
 // Define relationships
 FeaturedWork.hasMany(FeaturedWorkImage, { foreignKey: 'featuredWorkId', as: 'images', onDelete: 'CASCADE' });
 FeaturedWorkImage.belongsTo(FeaturedWork, { foreignKey: 'featuredWorkId', as: 'featuredWork' });
@@ -995,6 +1038,104 @@ app.delete('/api/featured-works/:id/images/:imageId', authenticateToken, async (
     res.json({ message: 'Internal image deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete internal image', message: error.message });
+  }
+});
+
+// ============ CONTACT MESSAGE ROUTES ============
+
+// POST submit contact form (public)
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, service, phone, message } = req.body;
+
+    // Validation
+    if (!name || !email || !service || !message) {
+      return res.status(400).json({ error: 'Name, email, service, and message are required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const contactMessage = await ContactMessage.create({
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      service: service.trim(),
+      phone: phone ? phone.trim() : null,
+      message: message.trim()
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Thank you for your message! We will get back to you within 24 hours.',
+      data: contactMessage
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to submit contact form', message: error.message });
+  }
+});
+
+// GET all contact messages (protected)
+app.get('/api/contact', authenticateToken, async (req, res) => {
+  try {
+    const messages = await ContactMessage.findAll({
+      order: [['createdAt', 'DESC']]
+    });
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch contact messages', message: error.message });
+  }
+});
+
+// GET single contact message (protected)
+app.get('/api/contact/:id', authenticateToken, async (req, res) => {
+  try {
+    const message = await ContactMessage.findByPk(req.params.id);
+    if (!message) {
+      return res.status(404).json({ error: 'Contact message not found' });
+    }
+
+    // Mark as read
+    if (!message.read) {
+      await message.update({ read: true });
+    }
+
+    res.json(message);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch contact message', message: error.message });
+  }
+});
+
+// PUT mark message as read/unread (protected)
+app.put('/api/contact/:id/read', authenticateToken, async (req, res) => {
+  try {
+    const { read } = req.body;
+    const message = await ContactMessage.findByPk(req.params.id);
+    if (!message) {
+      return res.status(404).json({ error: 'Contact message not found' });
+    }
+
+    await message.update({ read: read === true || read === 'true' });
+    res.json(message);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update message status', message: error.message });
+  }
+});
+
+// DELETE contact message (protected)
+app.delete('/api/contact/:id', authenticateToken, async (req, res) => {
+  try {
+    const message = await ContactMessage.findByPk(req.params.id);
+    if (!message) {
+      return res.status(404).json({ error: 'Contact message not found' });
+    }
+
+    await message.destroy();
+    res.json({ message: 'Contact message deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete contact message', message: error.message });
   }
 });
 
