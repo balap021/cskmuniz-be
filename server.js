@@ -21,6 +21,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/uploads/sliders', express.static(path.join(__dirname, 'uploads', 'sliders')));
 app.use('/uploads/featured-works', express.static(path.join(__dirname, 'uploads', 'featured-works')));
 app.use('/uploads/featured-works/images', express.static(path.join(__dirname, 'uploads', 'featured-works', 'images')));
+app.use('/uploads/services', express.static(path.join(__dirname, 'uploads', 'services')));
 
 // MySQL connection using Sequelize
 const DB_HOST = process.env.DB_HOST || 'localhost';
@@ -220,6 +221,47 @@ const FeaturedWorkImage = sequelize.define('FeaturedWorkImage', {
   timestamps: true
 });
 
+// Service Model
+const Service = sequelize.define('Service', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  title: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    trim: true
+  },
+  description: {
+    type: DataTypes.TEXT,
+    allowNull: false
+  },
+  filename: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  originalName: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  path: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  url: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  order: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  }
+}, {
+  tableName: 'services',
+  timestamps: true
+});
+
 // ContactMessage Model
 const ContactMessage = sequelize.define('ContactMessage', {
   id: {
@@ -292,6 +334,7 @@ const authenticateToken = (req, res, next) => {
 const slidersUploadsDir = path.join(__dirname, 'uploads', 'sliders');
 const featuredWorksUploadsDir = path.join(__dirname, 'uploads', 'featured-works');
 const featuredWorkImagesUploadsDir = path.join(__dirname, 'uploads', 'featured-works', 'images');
+const servicesUploadsDir = path.join(__dirname, 'uploads', 'services');
 if (!fs.existsSync(slidersUploadsDir)) {
   fs.mkdirSync(slidersUploadsDir, { recursive: true });
 }
@@ -300,6 +343,9 @@ if (!fs.existsSync(featuredWorksUploadsDir)) {
 }
 if (!fs.existsSync(featuredWorkImagesUploadsDir)) {
   fs.mkdirSync(featuredWorkImagesUploadsDir, { recursive: true });
+}
+if (!fs.existsSync(servicesUploadsDir)) {
+  fs.mkdirSync(servicesUploadsDir, { recursive: true });
 }
 
 // Multer configuration for slider uploads
@@ -335,6 +381,17 @@ const featuredWorkImageStorage = multer.diskStorage({
   }
 });
 
+// Multer configuration for service uploads
+const serviceStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, servicesUploadsDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'service-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -365,6 +422,14 @@ const uploadFeaturedWork = multer({
 
 const uploadFeaturedWorkImage = multer({
   storage: featuredWorkImageStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: fileFilter
+});
+
+const uploadService = multer({
+  storage: serviceStorage,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit
   },
@@ -1081,6 +1146,165 @@ app.delete('/api/featured-works/:id/images/:imageId', authenticateToken, async (
     res.json({ message: 'Internal image deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete internal image', message: error.message });
+  }
+});
+
+// ============ SERVICE ROUTES ============
+
+// GET all services (public)
+app.get('/api/services', async (req, res) => {
+  try {
+    const services = await Service.findAll({
+      order: [['order', 'ASC'], ['createdAt', 'DESC']]
+    });
+    res.json(services);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch services', message: error.message });
+  }
+});
+
+// GET single service
+app.get('/api/services/:id', async (req, res) => {
+  try {
+    const service = await Service.findByPk(req.params.id);
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    res.json(service);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch service', message: error.message });
+  }
+});
+
+// POST upload new service (protected)
+app.post('/api/services', authenticateToken, uploadService.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    if (!req.body.title || !req.body.description) {
+      return res.status(400).json({ error: 'Title and description are required' });
+    }
+
+    const service = await Service.create({
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      path: req.file.path,
+      url: `/uploads/services/${req.file.filename}`,
+      title: req.body.title,
+      description: req.body.description,
+      order: req.body.order || 0
+    });
+
+    res.status(201).json(service);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create service', message: error.message });
+  }
+});
+
+// PUT update service (title, description, order) (protected)
+app.put('/api/services/:id', authenticateToken, async (req, res) => {
+  try {
+    const serviceId = parseInt(req.params.id);
+    if (isNaN(serviceId)) {
+      return res.status(400).json({ error: 'Invalid service ID' });
+    }
+    const { title, description, order } = req.body;
+    const service = await Service.findByPk(serviceId);
+
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const updateData = {};
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (order !== undefined) updateData.order = parseInt(order);
+
+    await service.update(updateData);
+    await service.reload();
+
+    res.json(service);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update service', message: error.message });
+  }
+});
+
+// PUT update service with new file (protected)
+app.put('/api/services/:id/image', authenticateToken, uploadService.single('image'), async (req, res) => {
+  try {
+    const serviceId = parseInt(req.params.id);
+    if (isNaN(serviceId)) {
+      return res.status(400).json({ error: 'Invalid service ID' });
+    }
+
+    const service = await Service.findByPk(serviceId);
+
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    // Delete old file from filesystem
+    const oldFilePath = service.path;
+    if (oldFilePath) {
+      const fullPath = path.isAbsolute(oldFilePath)
+        ? oldFilePath
+        : path.join(__dirname, oldFilePath);
+
+      if (fs.existsSync(fullPath)) {
+        try {
+          fs.unlinkSync(fullPath);
+        } catch (deleteError) {
+          console.error('Error deleting old service file:', deleteError.message);
+        }
+      }
+    }
+
+    // Update existing record with new file info
+    const updateData = {
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      path: req.file.path,
+      url: `/uploads/services/${req.file.filename}`
+    };
+
+    if (req.body.title) updateData.title = req.body.title;
+    if (req.body.description) updateData.description = req.body.description;
+    if (req.body.order !== undefined) updateData.order = parseInt(req.body.order);
+
+    await service.update(updateData);
+    await service.reload();
+
+    res.json(service);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update service image', message: error.message });
+  }
+});
+
+// DELETE service (protected)
+app.delete('/api/services/:id', authenticateToken, async (req, res) => {
+  try {
+    const service = await Service.findByPk(req.params.id);
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    // Delete file from filesystem
+    const filePath = path.isAbsolute(service.path) ? service.path : path.join(__dirname, service.path);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    // Delete from database
+    await service.destroy();
+    res.json({ message: 'Service deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete service', message: error.message });
   }
 });
 
