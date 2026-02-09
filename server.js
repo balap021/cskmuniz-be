@@ -6,6 +6,8 @@ const fs = require('fs');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const sharp = require('sharp');
+const compression = require('compression');
 require('dotenv').config();
 
 const app = express();
@@ -13,15 +15,22 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
+app.use(compression()); // Enable gzip compression
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded images statically
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use('/uploads/sliders', express.static(path.join(__dirname, 'uploads', 'sliders')));
-app.use('/uploads/featured-works', express.static(path.join(__dirname, 'uploads', 'featured-works')));
-app.use('/uploads/featured-works/images', express.static(path.join(__dirname, 'uploads', 'featured-works', 'images')));
-app.use('/uploads/services', express.static(path.join(__dirname, 'uploads', 'services')));
+// Serve uploaded images statically with caching headers
+const staticOptions = {
+  maxAge: '1y', // 1 year cache
+  etag: true,
+  lastModified: true
+};
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), staticOptions));
+app.use('/uploads/sliders', express.static(path.join(__dirname, 'uploads', 'sliders'), staticOptions));
+app.use('/uploads/featured-works', express.static(path.join(__dirname, 'uploads', 'featured-works'), staticOptions));
+app.use('/uploads/featured-works/images', express.static(path.join(__dirname, 'uploads', 'featured-works', 'images'), staticOptions));
+app.use('/uploads/services', express.static(path.join(__dirname, 'uploads', 'services'), staticOptions));
 
 // MySQL connection using Sequelize
 const DB_HOST = process.env.DB_HOST || 'localhost';
@@ -45,12 +54,20 @@ const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
 
 // Test connection
 sequelize.authenticate()
-  .then(() => {
+  .then(async () => {
     console.log('✅ Connected to MySQL database');
-    // Sync models (create tables if they don't exist)
-    sequelize.sync({ alter: true }).then(() => {
+    // Sync models (create tables if they don't exist, but don't alter existing tables)
+    // Using { alter: false } to avoid "too many keys" error on existing tables
+    try {
+      await sequelize.sync({ alter: false });
       console.log('✅ Database tables synchronized');
-    });
+      
+      // Manually add width and height columns if they don't exist (for existing tables)
+      await addImageDimensionColumns();
+    } catch (syncError) {
+      console.warn('⚠️  Database sync warning:', syncError.message);
+      console.log('   Tables may already exist. If you need to add new columns, use migrations.');
+    }
   })
   .catch(err => {
     console.error('❌ MySQL connection error:', err.message);
@@ -132,6 +149,14 @@ const SliderImage = sequelize.define('SliderImage', {
     type: DataTypes.STRING,
     allowNull: false
   },
+  width: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  height: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
   alt: {
     type: DataTypes.STRING,
     defaultValue: 'Slider Image'
@@ -167,6 +192,14 @@ const FeaturedWork = sequelize.define('FeaturedWork', {
   url: {
     type: DataTypes.STRING,
     allowNull: false
+  },
+  width: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  height: {
+    type: DataTypes.INTEGER,
+    allowNull: true
   },
   heading: {
     type: DataTypes.STRING,
@@ -212,6 +245,14 @@ const FeaturedWorkImage = sequelize.define('FeaturedWorkImage', {
     type: DataTypes.STRING,
     allowNull: false
   },
+  width: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  height: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
   order: {
     type: DataTypes.INTEGER,
     defaultValue: 0
@@ -252,6 +293,14 @@ const Service = sequelize.define('Service', {
   url: {
     type: DataTypes.STRING,
     allowNull: false
+  },
+  width: {
+    type: DataTypes.INTEGER,
+    allowNull: true
+  },
+  height: {
+    type: DataTypes.INTEGER,
+    allowNull: true
   },
   order: {
     type: DataTypes.INTEGER,
@@ -312,6 +361,86 @@ FeaturedWorkImage.belongsTo(FeaturedWork, { foreignKey: 'featuredWorkId', as: 'f
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
+// Helper function to add width/height columns to existing tables
+const addImageDimensionColumns = async () => {
+  try {
+    const queryInterface = sequelize.getQueryInterface();
+    
+    // Check and add columns to slider_images table
+    const sliderTableInfo = await queryInterface.describeTable('slider_images');
+    if (!sliderTableInfo.width) {
+      await queryInterface.addColumn('slider_images', 'width', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added width column to slider_images');
+    }
+    if (!sliderTableInfo.height) {
+      await queryInterface.addColumn('slider_images', 'height', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added height column to slider_images');
+    }
+    
+    // Check and add columns to featured_works table
+    const featuredWorksTableInfo = await queryInterface.describeTable('featured_works');
+    if (!featuredWorksTableInfo.width) {
+      await queryInterface.addColumn('featured_works', 'width', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added width column to featured_works');
+    }
+    if (!featuredWorksTableInfo.height) {
+      await queryInterface.addColumn('featured_works', 'height', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added height column to featured_works');
+    }
+    
+    // Check and add columns to featured_work_images table
+    const featuredWorkImagesTableInfo = await queryInterface.describeTable('featured_work_images');
+    if (!featuredWorkImagesTableInfo.width) {
+      await queryInterface.addColumn('featured_work_images', 'width', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added width column to featured_work_images');
+    }
+    if (!featuredWorkImagesTableInfo.height) {
+      await queryInterface.addColumn('featured_work_images', 'height', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added height column to featured_work_images');
+    }
+    
+    // Check and add columns to services table
+    const servicesTableInfo = await queryInterface.describeTable('services');
+    if (!servicesTableInfo.width) {
+      await queryInterface.addColumn('services', 'width', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added width column to services');
+    }
+    if (!servicesTableInfo.height) {
+      await queryInterface.addColumn('services', 'height', {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      });
+      console.log('✅ Added height column to services');
+    }
+  } catch (error) {
+    // Ignore errors if columns already exist or tables don't exist yet
+    if (!error.message.includes('Duplicate column name') && !error.message.includes("doesn't exist")) {
+      console.warn('⚠️  Warning adding dimension columns:', error.message);
+    }
+  }
+};
+
 // Authentication Middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -347,6 +476,72 @@ if (!fs.existsSync(featuredWorkImagesUploadsDir)) {
 if (!fs.existsSync(servicesUploadsDir)) {
   fs.mkdirSync(servicesUploadsDir, { recursive: true });
 }
+
+// Image processing utilities
+const processImage = async (inputPath, outputPath, options = {}) => {
+  const {
+    quality = 92, // Increased from 85 to 92 for better clarity
+    maxWidth = null,
+    maxHeight = null,
+    format = 'webp'
+  } = options;
+
+  let pipeline = sharp(inputPath);
+
+  // Get image metadata
+  const metadata = await pipeline.metadata();
+  
+  // Resize if needed
+  if (maxWidth || maxHeight) {
+    pipeline = pipeline.resize(maxWidth, maxHeight, {
+      fit: 'inside',
+      withoutEnlargement: true,
+      kernel: 'lanczos3' // Better quality resampling
+    });
+  }
+
+  // Convert and compress based on format
+  if (format === 'webp') {
+    pipeline = pipeline.webp({ 
+      quality,
+      effort: 6, // Higher effort for better compression (0-6, 6 is best)
+      nearLossless: false, // Set to true for near-lossless quality (larger files)
+      smartSubsample: true // Better quality subsampling
+    });
+  } else if (format === 'jpeg' || format === 'jpg') {
+    pipeline = pipeline.jpeg({ 
+      quality, 
+      mozjpeg: true,
+      trellisQuantisation: true, // Better quality
+      overshootDeringing: true,
+      optimizeScans: true
+    });
+  } else if (format === 'png') {
+    pipeline = pipeline.png({ 
+      quality: Math.min(100, quality * 1.1), // PNG quality is 0-100
+      compressionLevel: 9,
+      palette: true // Use palette for better compression
+    });
+  }
+
+  await pipeline.toFile(outputPath);
+  
+  // Get optimized image metadata
+  const optimizedMetadata = await sharp(outputPath).metadata();
+  
+  return {
+    width: optimizedMetadata.width,
+    height: optimizedMetadata.height,
+    size: fs.statSync(outputPath).size,
+    format: optimizedMetadata.format
+  };
+};
+
+// Check if browser supports WebP
+const supportsWebP = (req) => {
+  const accept = req.headers.accept || '';
+  return accept.includes('image/webp');
+};
 
 // Multer configuration for slider uploads
 const sliderStorage = multer.diskStorage({
@@ -712,17 +907,35 @@ app.post('/api/sliders', authenticateToken, upload.single('image'), async (req, 
       return res.status(400).json({ error: 'No image file provided' });
     }
 
+    // Process and optimize image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(slidersUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file and use optimized version
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
     const sliderImage = await SliderImage.create({
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/sliders/${req.file.filename}`,
+      path: optimizedPath,
+      url: `/uploads/sliders/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height,
       alt: req.body.alt || req.file.originalname,
       order: req.body.order || 0
     });
 
     res.status(201).json(sliderImage);
   } catch (error) {
+    console.error('Error processing slider image:', error);
     res.status(500).json({ error: 'Failed to upload slider image', message: error.message });
   }
 });
@@ -774,10 +987,8 @@ app.put('/api/sliders/:id/image', authenticateToken, upload.single('image'), asy
     }
 
     // Delete old file from filesystem
-    // The path stored in database is the full path from multer
     const oldFilePath = slider.path;
     if (oldFilePath) {
-      // Handle both absolute and relative paths
       const fullPath = path.isAbsolute(oldFilePath) 
         ? oldFilePath 
         : path.join(__dirname, oldFilePath);
@@ -788,29 +999,40 @@ app.put('/api/sliders/:id/image', authenticateToken, upload.single('image'), asy
           console.log('✅ Deleted old file:', fullPath);
         } catch (deleteError) {
           console.error('❌ Error deleting old file:', deleteError.message);
-          // Continue even if deletion fails
         }
-      } else {
-        console.warn('⚠️ Old file not found (may have been deleted already):', fullPath);
       }
     }
 
-    // Update existing record with new file info
+    // Process and optimize new image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(slidersUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
+    // Update existing record with optimized file info
     const updateData = {
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/sliders/${req.file.filename}`
+      path: optimizedPath,
+      url: `/uploads/sliders/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height
     };
 
     if (req.body.alt) updateData.alt = req.body.alt;
     if (req.body.order !== undefined) updateData.order = parseInt(req.body.order);
 
-    // Use update() to modify existing record, not create new one
-    console.log(`🔄 Updating slider ID: ${slider.id} (not creating new record)`);
     await slider.update(updateData);
     await slider.reload();
-    console.log(`✅ Slider updated successfully. ID: ${slider.id}, New filename: ${slider.filename}`);
 
     res.json(slider);
   } catch (error) {
@@ -896,11 +1118,28 @@ app.post('/api/featured-works', authenticateToken, uploadFeaturedWork.single('im
       return res.status(400).json({ error: 'Heading is required' });
     }
 
+    // Process and optimize image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(featuredWorksUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
     const featuredWork = await FeaturedWork.create({
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/featured-works/${req.file.filename}`,
+      path: optimizedPath,
+      url: `/uploads/featured-works/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height,
       heading: req.body.heading,
       order: req.body.order || 0
     });
@@ -987,12 +1226,29 @@ app.put('/api/featured-works/:id/image', authenticateToken, uploadFeaturedWork.s
       }
     }
 
-    // Update existing record with new file info
+    // Process and optimize new image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(featuredWorksUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
+    // Update existing record with optimized file info
     const updateData = {
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/featured-works/${req.file.filename}`
+      path: optimizedPath,
+      url: `/uploads/featured-works/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height
     };
 
     if (req.body.heading) updateData.heading = req.body.heading;
@@ -1098,19 +1354,29 @@ app.post('/api/featured-works/:id/images', authenticateToken, uploadFeaturedWork
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    console.log('✅ File details:', {
-      filename: req.file.filename,
-      originalName: req.file.originalname,
-      path: req.file.path,
-      size: req.file.size
+    // Process and optimize image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(featuredWorkImagesUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
     });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
 
     const internalImage = await FeaturedWorkImage.create({
       featuredWorkId: featuredWorkId,
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/featured-works/images/${req.file.filename}`,
+      path: optimizedPath,
+      url: `/uploads/featured-works/images/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height,
       order: req.body.order || 0
     });
 
@@ -1187,11 +1453,28 @@ app.post('/api/services', authenticateToken, uploadService.single('image'), asyn
       return res.status(400).json({ error: 'Title and description are required' });
     }
 
+    // Process and optimize image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(servicesUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
     const service = await Service.create({
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/services/${req.file.filename}`,
+      path: optimizedPath,
+      url: `/uploads/services/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height,
       title: req.body.title,
       description: req.body.description,
       order: req.body.order || 0
@@ -1265,12 +1548,29 @@ app.put('/api/services/:id/image', authenticateToken, uploadService.single('imag
       }
     }
 
-    // Update existing record with new file info
+    // Process and optimize new image
+    const originalPath = req.file.path;
+    const optimizedFilename = req.file.filename.replace(/\.[^/.]+$/, '') + '.webp';
+    const optimizedPath = path.join(servicesUploadsDir, optimizedFilename);
+    
+    const metadata = await processImage(originalPath, optimizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp'
+    });
+
+    // Delete original file
+    if (fs.existsSync(originalPath)) {
+      fs.unlinkSync(originalPath);
+    }
+
+    // Update existing record with optimized file info
     const updateData = {
-      filename: req.file.filename,
+      filename: optimizedFilename,
       originalName: req.file.originalname,
-      path: req.file.path,
-      url: `/uploads/services/${req.file.filename}`
+      path: optimizedPath,
+      url: `/uploads/services/${optimizedFilename}`,
+      width: metadata.width,
+      height: metadata.height
     };
 
     if (req.body.title) updateData.title = req.body.title;
@@ -1406,6 +1706,141 @@ app.delete('/api/contact/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ============ DYNAMIC IMAGE RESIZING (On-Demand) ============
+
+// In-memory cache for resized images (optional - can be cleared)
+const imageCache = new Map();
+
+// GET dynamic image resizing endpoint
+app.get('/api/images/:type/:id/:size', async (req, res) => {
+  try {
+    const { type, id, size } = req.params;
+    
+    // Validate size parameter
+    const validSizes = ['thumb', 'medium', 'large', 'original'];
+    if (!validSizes.includes(size)) {
+      return res.status(400).json({ error: 'Invalid size. Use: thumb, medium, large, or original' });
+    }
+
+    // Define size dimensions
+    const sizeDimensions = {
+      thumb: { maxWidth: 300, maxHeight: 300 },
+      medium: { maxWidth: 800, maxHeight: 800 },
+      large: { maxWidth: 1920, maxHeight: 1920 },
+      original: { maxWidth: null, maxHeight: null }
+    };
+
+    // Find the image record based on type
+    let imageRecord = null;
+    let imagePath = null;
+
+    switch (type) {
+      case 'slider':
+        imageRecord = await SliderImage.findByPk(id);
+        break;
+      case 'featured-work':
+        imageRecord = await FeaturedWork.findByPk(id);
+        break;
+      case 'featured-work-image':
+        imageRecord = await FeaturedWorkImage.findByPk(id);
+        break;
+      case 'service':
+        imageRecord = await Service.findByPk(id);
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid image type' });
+    }
+
+    if (!imageRecord) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+
+    imagePath = path.isAbsolute(imageRecord.path) 
+      ? imageRecord.path 
+      : path.join(__dirname, imageRecord.path);
+
+    if (!fs.existsSync(imagePath)) {
+      return res.status(404).json({ error: 'Image file not found' });
+    }
+
+    // If original size requested, serve directly
+    if (size === 'original') {
+      const format = supportsWebP(req) ? 'webp' : path.extname(imagePath).slice(1);
+      if (format === 'webp' && !imagePath.endsWith('.webp')) {
+        // Need to convert on-the-fly
+        const tempPath = imagePath + '.temp.webp';
+        await processImage(imagePath, tempPath, { quality: 92, format: 'webp' });
+        res.setHeader('Content-Type', 'image/webp');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        res.sendFile(tempPath, () => {
+          // Clean up temp file after sending
+          if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+          }
+        });
+      } else {
+        res.setHeader('Content-Type', `image/${format}`);
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        res.sendFile(imagePath);
+      }
+      return;
+    }
+
+    // Generate resized image on-demand
+    const dimensions = sizeDimensions[size];
+    const cacheKey = `${type}-${id}-${size}`;
+    
+    // Check cache first
+    if (imageCache.has(cacheKey)) {
+      const cachedPath = imageCache.get(cacheKey);
+      if (fs.existsSync(cachedPath)) {
+        const format = supportsWebP(req) ? 'webp' : 'jpeg';
+        res.setHeader('Content-Type', `image/${format}`);
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        res.sendFile(cachedPath);
+        return;
+      } else {
+        imageCache.delete(cacheKey);
+      }
+    }
+
+    // Generate resized image
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const resizedFilename = `${cacheKey}-${Date.now()}.webp`;
+    const resizedPath = path.join(tempDir, resizedFilename);
+    
+    await processImage(imagePath, resizedPath, {
+      quality: 92, // Higher quality for better clarity
+      format: 'webp',
+      maxWidth: dimensions.maxWidth,
+      maxHeight: dimensions.maxHeight
+    });
+
+    // Cache the resized image (limit cache size)
+    if (imageCache.size > 100) {
+      // Clear oldest entries
+      const firstKey = imageCache.keys().next().value;
+      const firstPath = imageCache.get(firstKey);
+      if (fs.existsSync(firstPath)) {
+        fs.unlinkSync(firstPath);
+      }
+      imageCache.delete(firstKey);
+    }
+    imageCache.set(cacheKey, resizedPath);
+
+    res.setHeader('Content-Type', 'image/webp');
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.sendFile(resizedPath);
+  } catch (error) {
+    console.error('Error resizing image:', error);
+    res.status(500).json({ error: 'Failed to resize image', message: error.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });
@@ -1416,3 +1851,4 @@ app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`API endpoints available at http://localhost:${PORT}/api`);
 });
+
