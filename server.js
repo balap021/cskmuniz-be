@@ -480,6 +480,16 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 
 // ============ USER MANAGEMENT ROUTES (Protected) ============
 
+// Helper function to transform user object for frontend (add _id field)
+const transformUser = (user) => {
+  if (!user) return null;
+  const userObj = user.toJSON ? user.toJSON() : user;
+  return {
+    ...userObj,
+    _id: userObj.id.toString()
+  };
+};
+
 // GET all users
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
@@ -487,7 +497,8 @@ app.get('/api/users', authenticateToken, async (req, res) => {
       attributes: { exclude: ['password'] },
       order: [['createdAt', 'DESC']]
     });
-    res.json(users);
+    const transformedUsers = users.map(transformUser);
+    res.json(transformedUsers);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch users', message: error.message });
   }
@@ -502,9 +513,41 @@ app.get('/api/users/:id', authenticateToken, async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    res.json(user);
+    res.json(transformUser(user));
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch user', message: error.message });
+  }
+});
+
+// POST create user
+app.post('/api/users', authenticateToken, async (req, res) => {
+  try {
+    const { name, username, password } = req.body;
+
+    if (!name || !username || !password) {
+      return res.status(400).json({ error: 'Name, username, and password are required' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Check if username already exists
+    const existingUser = await User.findOne({ where: { username: username.toLowerCase() } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+
+    const user = await User.create({
+      name,
+      username: username.toLowerCase(),
+      password
+    });
+
+    await user.reload({ attributes: { exclude: ['password'] } });
+    res.status(201).json(transformUser(user));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create user', message: error.message });
   }
 });
 
@@ -544,7 +587,7 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
     await user.update(updateData);
     await user.reload({ attributes: { exclude: ['password'] } });
 
-    res.json(user);
+    res.json(transformUser(user));
   } catch (error) {
     res.status(500).json({ error: 'Failed to update user', message: error.message });
   }
@@ -554,7 +597,7 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
 app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   try {
     // Prevent deleting yourself
-    if (req.user.userId == req.params.id) {
+    if (String(req.user.userId) === String(req.params.id)) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
 
